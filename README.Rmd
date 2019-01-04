@@ -1,0 +1,403 @@
+---
+title: "WGBS Analysis Pipeline"
+author: "Mark E. Pepin"
+date: "11/10/2018"
+output:
+  html_document:
+    code_folding: hide
+    keep_md: yes
+    toc: yes
+    toc_float: yes
+header-includes:
+- \usepackage{booktabs}
+- \usepackage{longtable}
+- \usepackage{array}
+- \usepackage{multirow}
+- \usepackage[table]{xcolor}
+- \usepackage{wrapfig}
+- \usepackage{float}
+- \usepackage{colortbl}
+- \usepackage{pdflscape}
+- \usepackage{tabu}
+- \usepackage{threeparttable}
+mainfont: Times
+fontsize: 10pt
+always_allow_html: yes
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+library(kableExtra)
+opts_chunk$set(tidy.opts=list(width.cutoff=30),tidy=FALSE, warning = FALSE, message = FALSE, cache = TRUE, cache.lazy = FALSE)
+options(knitr.kable.NA = '')
+```
+
+**Author**: Mark E. Pepin, MS Biomedical Engineering | MD/PhD Trainee  
+**Contact**: pepinme@gmail.com  
+**Institution**: University of Alabama at Birmingham  
+**Location**: 542 Biomedical Research Building 2, Birmingham, AL 35294  
+
+#Genome Assembly and Alignment
+
+The first task is to align the bisulfite reduced and sequenced reads to a genome assembly. To accomplish this, I prepared the genome assembly based on Gencode annotation (gencode.v28.annotation.gtf) and sequence (GRCh38.p12.genome.fa). For whole-genome bisulfite sequencing via the Bismark (v0.20.0) aligner and genome preparation, a CT- and GA-converted assemblies are created.
+
+##Genome Assembly
+
+`./bismark_genome_preparation --path_to_bowtie ../bowtie2-2.3.4.2-linux-x86_64 -- verbose ../../Input/Genome/GRCh38.p12.genome.fa`
+
+##Adapter Trimming
+
+Once the genome assembly was created, adapter sequences were trimmed and sequencing quality assessed via trim_galore and FastQC, respectively.
+
+`module load SAMtools/1.6-intel-2017a`
+`module load Bowtie2/2.3.3-intel-2017a`
+`module load Trim_Galore/0.4.4-foss-2016b`
+`module load FastQC/0.11.7-Java-1.8.0_74`
+
+`trim_galore -o $INPUT_DIR/fastq_trimmed/ --paired --rrbs --non_directional --length 20 --fastqc` `$INPUT_DIR/fastq/${VAR}_1.txt.gz $INPUT_DIR/fastq/${VAR}_2.txt.gz`
+
+##Read Alignment
+
+We then aligned all 34 paired-end .fastq files to the genome assemblies using the following command:
+
+`$BISMARK/bismark \`
+`--bowtie2 --bam $GENOME_DIR \`
+`-1 $INPUT_DIR/fastq_trimmed/${VAR}_1.txt.gz_val_1.fq.gz -2 $INPUT_DIR/fastq_trimmed/${VAR}_2.txt.gz_val_2.fq.gz \`
+`--output_dir $RESULTS_DIR/WGBS`
+
+##Deduplication
+
+Once aligned, we need to "deduplicate" the aligned .bam files to reduce PCR bias.
+
+`$BISMARK/deduplicate_bismark \`
+`--output_dir $RESULTS_DIR/WGBS/deduplicate_bismark \`
+`--bam -p \`
+`$RESULTS_DIR/WGBS/${VAR}_1.txt.gz_val_1_bismark_bt2_pe.bam`
+
+##Methylation Extraction
+
+Once finished, the CpG methylation was extracted as both bedgraph file (for UCSC genome browser) and bed file, which was then used to identify differentially-methylated cytosines (DMCs) and differentially-methylated regions (DMRs).
+
+`$BISMARK/bismark_methylation_extractor \`
+`-p --no_overlap --report --bedGraph --gzip \`
+`$RESULTS_DIR/WGBS/deduplicate_bismark/${VAR}_1.txt.gz_val_1_bismark_bt2_pe.deduplicated.bam`
+
+The "bismark.cov" files that resulted from this were then read into R () and combined into a single "object" for differential methylation analysis
+
+#Differential Methylation Analysis
+
+##Combining sample methylation
+
+```{r Count.Compile}
+#Conditions to be used in differential methylation analysis (FILL OUT)
+library(openxlsx)
+RESPONSE=c("CON","NR")
+TIMING=c("CON","Pre")
+
+ANALYSIS="HF.v.NF"
+### "2" is Pre-LVAD, "3" is Post-LVAD, "1" is CON
+library(methylKit)
+file.list <- list.files(path = "../2_Input/2_Methyl/Aligned", pattern = "*_1.txt.gz_val_1_bismark_bt2_pe.deduplicated.bismark.cov", full.names = TRUE, all.files = TRUE)
+#Generate Column names (remove the extra nonsense from the path names)
+colnames <- gsub( "*_1.txt.gz_val_1_bismark_bt2_pe.deduplicated.bismark.cov", "", file.list)
+colnames <- gsub( "[.][.]/2_Input/2_Methyl/Aligned/", "", colnames)
+colnames <- gsub("\\_.*", "", colnames)
+sample_id<-as.list(colnames)
+#Import the Index file
+Index.raw<-read.xlsx("../2_Input/_Patient/Index_no.outliers.xlsx", sheet = "Index_no.outliers")
+Index.raw$Timing<-factor(Index.raw$Timing, levels = c("CON", "Pre", "Post"))
+Index.raw$Response<-factor(Index.raw$Response, levels=c("CON", "NR", "R"))
+Index.raw$Etiology<-factor(Index.raw$Etiology, levels=c("CON", "NICM", "ICM"))
+Index.raw$Pairing<-as.character(Index.raw$Pairing)
+
+## Sort the index according to the .bed file ordering (as imported). This is important for correct annotation of samples.
+Index_sorted<-subset(Index.raw, DNA.Meth_ID %in% colnames)
+Index_sorted$DNA.meth.ID<-factor(Index_sorted$DNA.Meth_ID, levels = colnames)
+Index_sorted<-Index_sorted[order(Index_sorted$DNA.Meth_ID),]
+#Created an index based on the desired sample criteria (Phenotype and Timing)
+Index_filtered<-subset(Index_sorted, Response %in% RESPONSE & Timing %in% TIMING)
+##Change "Pre/Post" variable to a factor of "0" or "1" (needed for differential methylation)
+Index_sorted$Timing<-factor(Index_sorted$Timing, levels = c("CON", "Pre", "Post"))
+Index_sorted$Timing<-as.integer(Index_sorted$Timing)
+
+Index_sorted$Response<-factor(Index_sorted$Response, levels = c("CON", "NR", "R"))
+Index_sorted$Response<-as.integer(Index_sorted$Response)
+# Index_sorted<-Index_sorted[!is.na(Index_sorted$Timing),]
+##Create a methlRawlistDB
+file.list<-as.list(file.list)
+myobj<-methRead(file.list, sample.id = sample_id, assembly = "hg38", treatment = Index_sorted$Response, pipeline = "bismarkCoverage", header = FALSE, context = "CpG")
+##Example of smaple statistics (can spot check these)
+getMethylationStats(myobj[[3]], plot = F, both.strands = F)
+
+#Subset the methylRawList to include only the sample_id's for the desired analysis
+myobj_filtered<-reorganize(myobj, sample.ids = Index_filtered$DNA.Meth_ID, Index_filtered$Response)
+```
+
+Once the samples have been compiled, it is valuable to perform some basic visualizations and statistics to determine whether quality filtering is necessary. The distribution of methylation change is plotted as a histogram (typically bimodal at the extremes), as well as a distribution of the read coverage per based, again plotted as a histogram. For the latter plot, it is important to determine whether PCR duplication biases the read coverage. If so, a secondary peak would emerge on the right-most portion of the histogram. In the current analysis, coverage distribution exhibits a one-tailed distribution, suggesting that the "deduplication" step in the alignment effectively eliminated the PCR amplification bias in coverage.
+
+```{r Methylation_stats}
+library(graphics)
+getMethylationStats(myobj_filtered[[2]], plot = T, both.strands = F)
+getCoverageStats(myobj_filtered[[2]], plot = T, both.strands = F)
+#Save these files in an output folder
+ifelse(!dir.exists(file.path("../3_Output/", ANALYSIS)), dir.create(file.path("../3_Output/", ANALYSIS)), FALSE)
+pdf(file=paste0("../3_Output/", ANALYSIS, "/", ANALYSIS, "_Methylation.Stats.pdf"))
+getMethylationStats(myobj_filtered[[2]], plot = T, both.strands = F)
+dev.off()
+pdf(file=paste0("../3_Output/", ANALYSIS, "/", ANALYSIS, "_Coverage.Stats.pdf"))
+getCoverageStats(myobj_filtered[[2]], plot = T, both.strands = F)
+dev.off()
+```
+
+Although most important in the context of correcting PCR-bias (duplication), filtering samples based on coverage also reduces false discovery based on low-coverage genomic regions. If PCR bias exists, an artificially high coverage would exist. Low coverage is also a concern due to low statistical power associated with low-coverage regions. Below, we discard bases with coverage below 10X, but also discard bases with coverage > 99.9th percentile.
+
+```{r filter_coverage}
+#remove exceedingly high-coverage (risk of PCR bias) or low-coverage DMPs (low statistical power) 
+filtered.myobj <- filterByCoverage(myobj_filtered, lo.count = 10, lo.perc = NULL, hi.count = NULL, hi.perc = 99.9)
+```
+
+##Visualizing Methylation
+
+```{r Methylation_visualization}
+#destrand and unite the sample data
+meth<-unite(filtered.myobj, destrand = FALSE) #When calculating DMRs, it is not helpful to "destrand"
+clusterSamples(meth, dist = "correlation", method = "ward", plot = TRUE)
+PCASamples(meth, screeplot = TRUE)
+PCASamples(meth)
+#Create a folder in which to generate all documents/tables for this analysyis
+ifelse(!dir.exists(file.path("../3_Output/", ANALYSIS)), dir.create(file.path("../3_Output/", ANALYSIS)), FALSE)
+#Create dendrogram and PCA plots
+pdf(file=paste0("../3_Output/", ANALYSIS, "/", ANALYSIS, "_Clustering.pdf"))
+clusterSamples(meth, dist = "correlation", method = "ward", plot = TRUE)
+PCASamples(meth, screeplot = TRUE)
+PCASamples(meth)
+dev.off()
+```
+
+
+## Differentially-Methylated Cytosines (DMCs)
+
+```{r DMC}
+#Calculate the differential methylation (TAKES A LONG TIME!)
+library(openxlsx)
+myDiff<-calculateDiffMeth(meth, overdispersion = "MN", test = "Chisq", mc.cores = 7)
+myDiff_md<-as(myDiff,"methylDiff")
+myDiff_filtered<-dplyr::select(myDiff_md, chr, start, end, strand, meth.diff, pvalue, qvalue)
+
+#Calculate percent methylation for each sample/site
+Methylation<-as.data.frame(meth)
+f = function(Cyt, cov, col_name) {
+  require(lazyeval)
+  require(dplyr)
+    mutate_call = lazyeval::interp(~ (a / b)*100, a = as.name(Cyt), b = as.name(cov))
+    Methylation %>% mutate_(.dots = setNames(list(mutate_call), col_name))
+}
+for(i in seq_along(Index_filtered$DNA.Meth_ID)){
+  COVERAGE=paste0("coverage", i)
+  mC=paste0("numCs", i)
+  perc.mC=paste0("perc.mC_", Index_filtered$DNA.Meth_ID[i])
+  Methylation<-f(Cyt=mC, cov=COVERAGE, col_name=perc.mC)
+}
+Methylation<-dplyr::select(Methylation, chr, start, end, contains("perc.mC"))
+
+#Merge with the percent methylation (by cytosine)
+myDiff_filtered<-left_join(myDiff_filtered, Methylation)
+
+#Subset by statistical threshold
+myDiff_p05<-dplyr::filter(myDiff_filtered, pvalue<0.05)
+myDiff_q05<-dplyr::filter(myDiff_filtered, qvalue<0.05)
+
+#Save a copy of the differential Methylation analysis
+wb_countData<-createWorkbook()
+addWorksheet(wb_countData, "P < 0.05")
+  writeData(wb_countData, "P < 0.05", myDiff_p05, rowNames = F)
+addWorksheet(wb_countData, "Q < 0.05")
+  writeData(wb_countData, "Q < 0.05", myDiff_q05, rowNames = F)
+saveWorkbook(wb_countData, file = paste0("../3_Output/", ANALYSIS, "/", ANALYSIS, "_DiffMeth.xlsx"), overwrite = TRUE)
+write.table(myDiff_p05, file=paste0("../3_Output/", ANALYSIS, "/", ANALYSIS, "_DiffMeth.bed"), quote=F, sep="\t", row.names=F, col.names=F)
+```
+
+##Annotate DMPs with Genomic and CpG Loci
+
+```{r Annotate_DMP}
+library(openxlsx)
+library(annotatr)
+library(AnnotationHub)
+library(rtracklayer)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+
+#convert to GRanges object (correct format for annotatr)
+myDiff_p05_GR<-makeGRangesFromDataFrame(myDiff_p05, seqnames.field = "chr", strand.field="strand", start.field = "start", end.field = "end", keep.extra.columns = T)
+#create annotations from the following sources
+annots = c('hg38_cpgs', 'hg38_basicgenes')
+# Build the annotations (a single GRanges object)
+annotations = build_annotations(genome = 'hg38', annotations = annots)
+# myDiff_GR<-as(myDiff, "GRanges")
+# Intersect the regions read in with the annotations
+dm_annotated = annotate_regions(
+    regions = myDiff_p05_GR,
+    annotations = annotations,
+    ignore.strand = TRUE,
+    quiet = FALSE)
+#convert to a data.frame
+df_dm_annotated = data.frame(dm_annotated)
+# A GRanges object is returned
+print(dm_annotated)
+##The issue with this annotation is that each DMP has multiple repeated rows if different annotations. To simplify this, we can condense the annotations into strings. This makes the resulting file more manageable based on the differential-methylation data.
+DiffMeth_Annotated<-df_dm_annotated %>% 
+  tidyr::fill(annot.symbol) %>% distinct() %>%
+  dplyr::group_by(seqnames, start, end, meth.diff, pvalue, qvalue, annot.symbol) %>% 
+  dplyr::summarise(Annotation=paste(unique(annot.type), collapse = ";"), Test=paste(unique(annot.id), collapse = ";"))
+#Add %Methylation
+DiffMeth_Annotated<-dplyr::rename(DiffMeth_Annotated, chr=seqnames)
+DiffMeth_Annotated<-dplyr::left_join(DiffMeth_Annotated, Methylation)
+#subset the Differential Methylation by statistics
+DiffMeth_Annotated_p05<-subset(DiffMeth_Annotated, pvalue<0.05)
+DiffMeth_Annotated_q05<-subset(DiffMeth_Annotated, qvalue<0.05)
+#Write out the annotated DMP file 
+library(openxlsx)
+ifelse(!dir.exists(file.path("../3_Output/", ANALYSIS)), dir.create(file.path("../3_Output/", ANALYSIS)), FALSE)
+wb_WGBS_Annotate<-createWorkbook()
+addWorksheet(wb_WGBS_Annotate, "P < 0.05")
+  writeData(wb_WGBS_Annotate, "P < 0.05", DiffMeth_Annotated_p05, rowNames = F)
+addWorksheet(wb_WGBS_Annotate, "Q < 0.05")
+  writeData(wb_WGBS_Annotate, "Q < 0.05", DiffMeth_Annotated_q05, rowNames = F)
+saveWorkbook(wb_WGBS_Annotate, file = paste0("../3_Output/", ANALYSIS, "/", ANALYSIS, "_Annotated_DiffMeth.xlsx"), overwrite = TRUE)
+#Provide a summary of the annotation
+dm_annsum = summarize_annotations(
+    annotated_regions = dm_annotated,
+    quiet = TRUE)
+print(dm_annsum)
+#Plot the annotation distribution
+dm_vs_kg_annotations = plot_annotation(
+    annotated_regions = dm_annotated,
+    plot_title = '# of Sites Tested for DM annotated on chr9',
+    x_label = 'knownGene Annotations',
+    y_label = 'Count')
+print(dm_vs_kg_annotations)
+
+annots_order = c(
+    'hg38_genes_1to5kb',
+    'hg38_genes_promoters',
+    'hg38_genes_5UTRs',
+    'hg38_genes_exons',
+    'hg38_genes_introns',
+    'hg38_genes_3UTRs')
+dm_vs_kg_annotations = plot_annotation(
+    annotated_regions = dm_annotated,
+    annotation_order = annots_order,
+    plot_title = '# of Sites Tested for DM annotated on chr9',
+    x_label = 'knownGene Annotations',
+    y_label = 'Count')
+print(dm_vs_kg_annotations)
+```
+
+#Heatmap of Differential Methylation
+
+```{r Heatmap_DMPs}
+library(pheatmap)
+DiffMeth_hm<-dplyr::filter(DiffMeth_Annotated_p05, grepl("promoter", Annotation))
+hm_Data<-as.data.frame(DiffMeth_hm)
+hm_Data<-hm_Data[!is.na(hm_Data$annot.symbol),]
+rownames(hm_Data)<-make.unique(hm_Data$annot.symbol, sep = ".")
+hm_Data<-dplyr::filter(hm_Data)
+##Make heatmap
+STATISTIC=0.05
+hm_Data<-dplyr::filter(hm_Data, qvalue<STATISTIC)
+
+hm_Data<-dplyr::select(hm_Data, contains("perc.mC"))
+hm_Data<-data.matrix(hm_Data)
+
+##
+##Index file for annotating samples
+hm_Index<-Index_filtered
+hm_Index$DNA.Meth_ID<-paste0("perc.mC_", hm_Index$DNA.Meth_ID)
+rownames(hm_Index)<-hm_Index$DNA.Meth_ID
+hm_Index<-as.data.frame(hm_Index)
+hm_Index<-dplyr::select(hm_Index, Sample_ID, Timing, Age_yrs, Etiology, Sex, Race)
+
+paletteLength <- 100
+myColor <- colorRampPalette(c("dodgerblue4", "white", "gold2"))(paletteLength)
+pheatmap(hm_Data,
+         cluster_cols=T, 
+         border_color=NA, 
+         cluster_rows=T, 
+         scale = 'row',
+         show_colnames = T, 
+         show_rownames = F, 
+         color = myColor,
+         annotation_col = hm_Index, 
+         filename = paste0("../3_Output/", ANALYSIS, "/", ANALYSIS, "_Heatmap.Q05.pdf"))
+```
+
+
+#Methylation Distribution using **EnrichedHeatmap**
+
+```{r Enriched.Heatmap}
+#Import the genomic annotation file
+library(EnrichedHeatmap)
+library(annotatr)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+annots = c("hg38_basicgenes", "hg38_genes_promoters", "hg38_genes_intergenic",
+           "hg38_genes_intronexonboundaries", "hg38_cpgs", "hg38_cpg_islands", "hg38_cpg_shores", "hg38_cpg_shelves", "hg38_cpg_inter")
+annotations=build_annotations(genome = "hg38", annotations = annots)
+annotations<-keepStandardChromosomes(annotations, pruning.mode = "coarse") #Remove nonstandard chromosomes
+
+myDiff_p05<-dplyr::mutate(myDiff_p05, absolute.meth=abs(meth.diff))
+myDiff_p05<-as(myDiff_p05, "GRanges")
+
+meDiff<-as(myDiff, "GRanges")
+
+# #Import the annotated "target" data
+# myDiff<-openxlsx::read.xlsx(paste0("../2_Input/WGBS_MethylKit_DiffMeth", ANALYSIS,".xlsx"), sheet = "P < 0.05")
+# myDiff_GR<-as(myDiff, "GRanges")
+
+#Annotate GRanges using hg38 genome
+dm_annotated = annotate_regions(
+  regions = myDiff_p05,
+  annotations = annotations,
+  ignore.strand = TRUE)
+#create data.frame
+df_dm_annotated <- as.data.frame(dm_annotated)
+#
+library(GenomicFeatures)
+genes<-genes(TxDb.Hsapiens.UCSC.hg38.knownGene)
+tss = promoters(genes, upstream = 0, downstream = 1)
+mat1 = normalizeToMatrix(myDiff_p05, tss, value_column = "absolute.meth", extend = 5000, mean_mode="w0", w=50, keep = c(0, 0.99))
+EnrichedHeatmap(mat1, col = c("white", "black"), name = ANALYSIS)
+
+png(file = paste0("../3_Output/", ANALYSIS, "/","_1Methyl.Gene.Distribution.png"), height = 3, width = 5)
+EnrichedHeatmap(mat1, col = c("white", "black"), name = "Heart Failure")
+dev.off()
+
+partition = kmeans(mat1, centers = 3)$cluster
+lgd = Legend(at = c("cluster1", "cluster2", "cluster3"), title = "Clusters", 
+    type = "lines", legend_gp = gpar(col = 2:4))
+ht_list = Heatmap(partition, col = structure(2:4, names = as.character(1:3)), name = "partition",
+              show_row_names = FALSE, width = unit(3, "mm")) + EnrichedHeatmap(mat1, col = c("white", "red"), name = "% Methylation - Heart Failure", split = partition, top_annotation = HeatmapAnnotation(lines = anno_enriched(gp = gpar(col = 2:4))), column_title = "|PercentMethylation|")
+draw(ht_list, main_heatmap = "% Methylation - Heart Failure")
+
+partition = kmeans(mat1, centers = 3)$cluster
+lgd = Legend(at = c("cluster1", "cluster2", "cluster3"), title = "Clusters", 
+    type = "lines", legend_gp = gpar(col = 2:4))
+ht_list = Heatmap(partition, col = structure(2:4, names = as.character(1:3)), name = "partition",
+              show_row_names = FALSE, width = unit(3, "mm")) + EnrichedHeatmap(mat1, col = c("white", "red"), name = "% Methylation - Heart Failure", split = partition, top_annotation = HeatmapAnnotation(lines = anno_enriched(gp = gpar(col = 2:4))), column_title = "|PercentMethylation|")
+pdf(file = paste0("../3_Output/", ANALYSIS, "/", ANALYSIS, "_Methyl.Gene.Distribution_Kmeans.pdf"), height = 7, width = 5)
+draw(ht_list, main_heatmap = "% Methylation - Heart Failure")
+dev.off()
+```
+
+
+#Supplemental Table: R Session Information
+
+All packages and setting are acquired using the following command: 
+```{r settings}
+sinfo<-devtools::session_info()
+sinfo$platform
+sinfo$packages %>% kable( 
+                         align="c", 
+                         longtable=T, 
+                         booktabs=T,
+                         caption="Packages and Required Dependencies") %>% 
+    kable_styling(latex_options=c("striped", "repeat_header", "condensed"))
+```
