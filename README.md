@@ -32,15 +32,15 @@ always_allow_html: yes
 **Institution**: University of Alabama at Birmingham  
 **Location**: 542 Biomedical Research Building 2, Birmingham, AL 35294  
 
-#Genome Assembly and Alignment
+# Genome Assembly and Alignment
 
 The first task is to align the bisulfite reduced and sequenced reads to a genome assembly. To accomplish this, I prepared the genome assembly based on Gencode annotation (gencode.v28.annotation.gtf) and sequence (GRCh38.p12.genome.fa). For whole-genome bisulfite sequencing via the Bismark (v0.20.0) aligner and genome preparation, a CT- and GA-converted assemblies are created.
 
-##Genome Assembly
+## Genome Assembly
 
 `./bismark_genome_preparation --path_to_bowtie ../bowtie2-2.3.4.2-linux-x86_64 -- verbose ../../Input/Genome/GRCh38.p12.genome.fa`
 
-##Adapter Trimming
+## Adapter Trimming
 
 Once the genome assembly was created, adapter sequences were trimmed and sequencing quality assessed via trim_galore and FastQC, respectively.
 
@@ -51,7 +51,7 @@ Once the genome assembly was created, adapter sequences were trimmed and sequenc
 
 `trim_galore -o $INPUT_DIR/fastq_trimmed/ --paired --rrbs --non_directional --length 20 --fastqc` `$INPUT_DIR/fastq/${VAR}_1.txt.gz $INPUT_DIR/fastq/${VAR}_2.txt.gz`
 
-##Read Alignment
+## Read Alignment
 
 We then aligned all 34 paired-end .fastq files to the genome assemblies using the following command:
 
@@ -60,7 +60,7 @@ We then aligned all 34 paired-end .fastq files to the genome assemblies using th
 `-1 $INPUT_DIR/fastq_trimmed/${VAR}_1.txt.gz_val_1.fq.gz -2 $INPUT_DIR/fastq_trimmed/${VAR}_2.txt.gz_val_2.fq.gz \`
 `--output_dir $RESULTS_DIR/WGBS`
 
-##Deduplication
+## Deduplication
 
 Once aligned, we need to "deduplicate" the aligned .bam files to reduce PCR bias.
 
@@ -69,7 +69,7 @@ Once aligned, we need to "deduplicate" the aligned .bam files to reduce PCR bias
 `--bam -p \`
 `$RESULTS_DIR/WGBS/${VAR}_1.txt.gz_val_1_bismark_bt2_pe.bam`
 
-##Methylation Extraction
+## Methylation Extraction
 
 Once finished, the CpG methylation was extracted as both bedgraph file (for UCSC genome browser) and bed file, which was then used to identify differentially-methylated cytosines (DMCs) and differentially-methylated regions (DMRs).
 
@@ -79,9 +79,9 @@ Once finished, the CpG methylation was extracted as both bedgraph file (for UCSC
 
 The "bismark.cov" files that resulted from this were then read into R () and combined into a single "object" for differential methylation analysis
 
-#Differential Methylation Analysis
+# Differential Methylation Analysis
 
-##Combining sample methylation
+## Combining sample methylation
 
 
 ```r
@@ -313,7 +313,7 @@ saveWorkbook(wb_countData, file = paste0("../3_Output/", ANALYSIS, "/", ANALYSIS
 write.table(myDiff_p05, file=paste0("../3_Output/", ANALYSIS, "/", ANALYSIS, "_DiffMeth.bed"), quote=F, sep="\t", row.names=F, col.names=F)
 ```
 
-##Annotate DMPs with Genomic and CpG Loci
+## Annotate DMPs with Genomic and CpG Loci
 
 
 ```r
@@ -548,7 +548,7 @@ pheatmap(hm_Data,
 ```
 
 
-#Methylation Distribution using **EnrichedHeatmap**
+# Methylation Distribution using **EnrichedHeatmap**
 
 
 ```r
@@ -626,7 +626,7 @@ dev.off()
 ```
 
 
-#Supplemental Table: R Session Information
+# Supplemental Table: R Session Information
 
 All packages and setting are acquired using the following command: 
 
